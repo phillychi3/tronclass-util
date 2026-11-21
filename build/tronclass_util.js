@@ -2,7 +2,7 @@
 // ==UserScript==
 // @name         yuntech tronclass util
 // @namespace    https://github.com/phillychi3
-// @version      0.4.0
+// @version      0.4.1
 // @description  一鍵觀看影片，一鍵完成每周影音教材觀看，一鍵觀看投影片
 // @author       someone
 // @match        https://eclass.yuntech.edu.tw/course/*
