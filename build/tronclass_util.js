@@ -3751,6 +3751,54 @@ createHTML: (html) => {
 		closeonfinish: false
 	});
 	//#endregion
+	//#region src/lib/courseware.js
+	async function fetchResourceJson(url) {
+		const response = await fetch(url, { credentials: "same-origin" });
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		return response.json();
+	}
+	async function getCoursewareUploads(activityId) {
+		return ((await fetchResourceJson(`/api/activities/${activityId}?sub_course_id=0`)).uploads || []).filter((upload) => !upload.deleted);
+	}
+	async function getCoursewareResource(activityId, upload) {
+		const params = new URLSearchParams({
+			refer_id: activityId,
+			refer_type: "learning_activity"
+		});
+		let url;
+		let name = upload.name || `resource-${upload.id}`;
+		if (upload.type === "document") {
+			params.set("preview", "true");
+			const data = await fetchResourceJson(`/api/uploads${upload.reference_id ? "/reference" : ""}/document/${encodeURIComponent(upload.reference_id || upload.id)}/url?${params}`);
+			if (!data.url) throw new Error("尚無可用的文件資源連結");
+			url = data.url;
+			const pathname = new URL(url, window.location.origin).pathname;
+			if (/\.pdf$/i.test(pathname) && !/\.pdf$/i.test(name)) name = `${name.replace(/\.[^.]+$/, "")}.pdf`;
+		} else {
+			if (!upload.allow_download) throw new Error("此資源未提供下載");
+			url = `/api/uploads/${encodeURIComponent(upload.id)}/blob?${params}`;
+		}
+		const resolvedUrl = new URL(url, window.location.origin);
+		if (!["http:", "https:"].includes(resolvedUrl.protocol)) throw new Error("資源連結格式不支援");
+		return {
+			name,
+			url: resolvedUrl.href
+		};
+	}
+	async function downloadCoursewareResource(resource) {
+		const response = await fetch(resource.url, { credentials: "same-origin" });
+		if (!response.ok) throw new Error(`HTTP ${response.status}`);
+		if (response.headers.get("content-type")?.includes("text/html")) throw new Error("伺服器回傳網頁，請確認登入狀態");
+		const url = URL.createObjectURL(await response.blob());
+		const link = document.createElement("a");
+		link.href = url;
+		link.download = resource.name;
+		document.body.appendChild(link);
+		link.click();
+		link.remove();
+		setTimeout(() => URL.revokeObjectURL(url), 6e4);
+	}
+	//#endregion
 	//#region node_modules/.pnpm/svelte@5.56.4/node_modules/svelte/src/internal/disclose-version.js
 	if (typeof window !== "undefined") ((window.__svelte ??= {}).v ??= /* @__PURE__ */ new Set()).add("5");
 	//#endregion
@@ -4083,6 +4131,68 @@ createHTML: (html) => {
 			}
 		});
 	}
+	function downloadallcourseware() {
+		const target = document.querySelector(".content-under-nav-2.with-loading.row");
+		if (!target || document.getElementById("loltron-courseware-download-all")) return;
+		const downloadbutton = document.createElement("div");
+		downloadbutton.innerHTML = `
+    <button class="btn btn-default" id="loltron-courseware-download-all">download all courseware</button>
+  `;
+		target.parentNode.insertBefore(downloadbutton, target);
+		const button = downloadbutton.querySelector("button");
+		const status = document.createElement("div");
+		status.setAttribute("role", "status");
+		const links = document.createElement("ul");
+		downloadbutton.append(status, links);
+		button.addEventListener("click", async () => {
+			button.disabled = true;
+			links.replaceChildren();
+			let downloaded = 0;
+			let failed = 0;
+			const seen = /* @__PURE__ */ new Set();
+			const activityIds = Array.from(new Set(Array.from(target.querySelectorAll(".learning-activity[id]")).map((activity) => activity.id.match(/^learning-activity-(\d+)$/)?.[1]).filter(Boolean)));
+			try {
+				for (const [index, activityId] of activityIds.entries()) {
+					status.textContent = `取得教材資源 ${index + 1}/${activityIds.length}…`;
+					let uploads;
+					try {
+						uploads = await getCoursewareUploads(activityId);
+					} catch (error) {
+						failed++;
+						const item = document.createElement("li");
+						item.textContent = `教材 ${activityId}：${error.message}`;
+						links.appendChild(item);
+						continue;
+					}
+					for (const upload of uploads) {
+						const key = upload.reference_id ? `reference-${upload.reference_id}` : upload.id;
+						if (key != null && seen.has(key)) continue;
+						if (key != null) seen.add(key);
+						const item = document.createElement("li");
+						links.appendChild(item);
+						try {
+							const resource = await getCoursewareResource(activityId, upload);
+							const link = document.createElement("a");
+							link.href = resource.url;
+							link.textContent = resource.name;
+							link.target = "_blank";
+							link.rel = "noopener noreferrer";
+							item.appendChild(link);
+							await downloadCoursewareResource(resource);
+							downloaded++;
+						} catch (error) {
+							failed++;
+							if (!item.firstChild) item.textContent = upload.name || `資源 ${upload.id}`;
+							item.append(`：${error.message}；若有連結可點擊開啟`);
+						}
+					}
+				}
+				status.textContent = activityIds.length ? `已送出 ${downloaded} 個下載，${failed} 項失敗。資源連結列於下方。` : "找不到教材，請等列表載入後再試。";
+			} finally {
+				button.disabled = false;
+			}
+		});
+	}
 	function modifyhomework() {
 		document.querySelectorAll("[ng-repeat*=\"homework in homeworkList\"]").forEach((el) => {
 			const homeworkId = angular.element(el).scope().homework.id;
@@ -4222,8 +4332,10 @@ createHTML: (html) => {
 		} else if (document.URL.match(/https?:\/\/eclass.yuntech.edu.tw\/course\/[0-9]{1,6}\/learning-activity(#)?\/(full-screen)?/)) {
 			if (await waitForElement("span", "需累積觀看")) await makevideopanel();
 			if (await waitForElement("span", "觀看或下載")) await makefilepanel();
-		} else if (document.URL.match(/https?:\/\/eclass.yuntech.edu.tw\/course\/[0-9]{1,6}\/courseware(#)?\//)) modifycourseware();
-		else if (document.URL.match(/https?:\/\/eclass.yuntech.edu.tw\/course\/[0-9]{1,6}\/homework/)) modifyhomework();
+		} else if (document.URL.match(/https?:\/\/eclass.yuntech.edu.tw\/course\/[0-9]{1,6}\/courseware(#)?\//)) {
+			downloadallcourseware();
+			modifycourseware();
+		} else if (document.URL.match(/https?:\/\/eclass.yuntech.edu.tw\/course\/[0-9]{1,6}\/homework(#)?\//)) modifyhomework();
 		observer.observe(document, {
 			childList: true,
 			subtree: true
